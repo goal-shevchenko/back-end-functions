@@ -1,113 +1,56 @@
-import { Entity } from './entity';
-import { injectable } from 'inversify';
-import { IUserEntity, UserRole, UserStatus } from './types';
+import TYPES from '@/src/types';
+import Container from '@/src/container';
+import * as functions from 'firebase-functions';
+import { region, runtimeOptions } from './configs/runtime';
+import { UserSeeding } from '@/infra/database/migration/seeding';
+import { UserService } from '@/src/app/services';
+import { UserRole, UserStatus } from '@/src/domain/types';
+import { User } from '@/domain';
 
-// Collection: users
-@injectable()
-export class User extends Entity<IUserEntity> {
-  constructor(props: IUserEntity) {
-    super(props);
-  }
+const userSeeding = functions
+  .runWith(runtimeOptions)
+  .region(region)
+  .https.onCall(async (data, context) => {
+    const seeding = Container.get<UserSeeding>(TYPES.UserSeeding);
+    await seeding.run();
+  });
 
-  /**
-   * Creates user entity
-   * @param props User properties
-   * @returns User
-   */
-  public static create(props: IUserEntity): User {
-    const instance = new User(props);
-    return instance;
-  }
+const onCreateUser = functions
+  .runWith(runtimeOptions)
+  .region(region)
+  .auth.user()
+  .onCreate(async u => {
+    const service = Container.get<UserService>(TYPES.UserService);
 
-  get id(): string {
-    return this._props.id || '';
-  }
+    const role: UserRole = UserRole.CUSTOMER;
+    const {
+      uid: id,
+      displayName: name = '',
+      email = '',
+      phoneNumber = '',
+      photoURL: avatar = ''
+    } = u;
 
-  get role(): UserRole | undefined {
-    return this.props.role;
-  }
+    // Check user exists
+    const existUser = await service.getById(u.uid);
+    if (existUser) {
+      throw Error(`User with email ${email} already existed`);
+    }
 
-  /**
-   * Email  of user entity
-   */
-  get email(): string {
-    return this.props.email || '';
-  }
+    const entity = User.create({
+      role,
+      id,
+      email,
+      name,
+      avatar,
+      phoneNumber,
+      status: UserStatus.ACTIVE
+    });
 
-  /**
-   * Phone number of user entity
-   */
-  get phoneNumber(): string {
-    return this.props.phoneNumber || '';
-  }
+    // Create new user
+    const user = await service.create(entity);
+    // Set custom claim for auth user
+    await service.setRole(user.id, role);
+  });
 
-  /**
-   * Name  of user entity
-   */
-  get name(): string {
-    return this.props.name || '';
-  }
-
-  /**
-   * This will display on URL. Thus, it should be unique
-   */
-  get username(): string {
-    return this.props.username || '';
-  }
-
-  /**
-   * Gets avatar
-   */
-  get avatar(): string {
-    return this.props.avatar || '';
-  }
-
-  /**
-   * Gets birthday
-   */
-  get birthday(): Date {
-    return this.props.birthday || (null as any);
-  }
-
-  /**
-   * Gets biography
-   */
-  get biography(): string {
-    return this.props.biography || '';
-  }
-
-  /**
-   * Gets address
-   */
-  get address(): string {
-    return this.props.address || '';
-  }
-
-  /**
-   * Gets timezone
-   */
-  get timezone(): string {
-    return this.props.timezone || 'UTC';
-  }
-
-  /**
-   * Gets country
-   */
-  get country(): string {
-    return this.props.country || '';
-  }
-
-  /**
-   * Gets language
-   */
-  get language(): string {
-    return this.props.language || 'EN';
-  }
-
-  /**
-   * Gets status
-   */
-  get status(): UserStatus {
-    return this.props.status;
-  }
-}
+export { userSeeding, onCreateUser };
